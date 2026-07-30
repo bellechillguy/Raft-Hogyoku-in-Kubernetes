@@ -1,0 +1,21 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: raft-config
+  namespace: hogyoku
+data:
+  NODE_IDS: "1,2,3,4,5"
+  RAFT_PORT: "8000"
+  HEALTH_PORT: "8081"
+  RAFT_DATA_DIR: /data
+  INITIAL_CLUSTER_SIZE: "3"
+  CONTACT_NODE_ADDRESS: raft-0.raft-svc:8000
+  PEERS: 1=raft-0.raft-svc:8000,2=raft-1.raft-svc:8000,3=raft-2.raft-svc:8000
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: api-gateway-config
+  namespace: hogyoku
+data:
+  RAFT_ADDR: raft-svc:8000
