@@ -49,7 +49,6 @@ raft-2.raft-svc.hogyoku.svc.cluster.local:8000
 │   │   ├── 30-raft-statefulset.yaml
 │   │   ├── 40-api-gateway.yaml
 │   │   └── 50-network-policy.yaml
-│   └── overlays/https/
 ├── scripts/cluster-status.sh
 ├── src/
 └── tests/
