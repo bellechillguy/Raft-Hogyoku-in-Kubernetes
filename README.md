@@ -1,33 +1,45 @@
 # Hogyoku Raft di Kubernetes
 
-Repo ini menjalankan key-value store Raft sebagai StatefulSet dan UI bawaan sebagai Deployment terpisah. `api_gateway.rs` dan `index.html` tetap utuh. Perubahan aplikasi hanya menyentuh node Raft, resolusi alamat, penyimpanan, dan health endpoint.
+Repositori ini menjalankan key-value store berbasis Raft di Kubernetes. Node Raft berjalan sebagai StatefulSet, sedangkan UI bawaan berjalan sebagai Deployment terpisah.
 
-## Cakupan yang dikerjakan
+File `api_gateway.rs` dan `index.html` tidak diubah. Perubahan pada aplikasi hanya mencakup node Raft, resolusi alamat, penyimpanan persisten, dan health endpoint.
+
+## Cakupan implementasi
 
 | Bagian | Implementasi |
 | --- | --- |
-| StatefulSet dan headless Service | 3 pod awal bernama `raft-0` sampai `raft-2`, masing-masing punya DNS tetap di `raft-svc` |
-| API Gateway | Deployment 2 replika, ClusterIP Service, dan `RAFT_ADDR` dari ConfigMap |
-| ConfigMap | ID node, daftar peer, port, lokasi data, ukuran cluster awal, dan contact node berada di `k8s/base/10-configmap.yaml` |
-| Persistent storage | Satu PVC `ReadWriteOnce` per pod melalui `volumeClaimTemplates` |
-| Crash recovery | term, vote, log, commit index, membership, dan snapshot ditulis ke `/data` |
-| Probe | `/ready` baru sukses setelah leader terpilih atau diketahui. `/live` mengecek actor Raft masih merespons |
-| Scaling bonus | Ordinal 3 dan 4 otomatis memanggil `AddNode` ke cluster yang sedang hidup |
-| NetworkPolicy bonus | Default deny, RPC hanya untuk Raft dan gateway, akses dari luar hanya ke port HTTP gateway |
-| Namespace dan RBAC bonus | Semua resource berada di namespace `hogyoku`. ServiceAccount tidak mendapat token atau izin Kubernetes API |
+| StatefulSet dan headless Service | Cluster dimulai dengan tiga pod, yaitu `raft-0` sampai `raft-2`. Setiap pod memiliki alamat DNS tetap melalui `raft-svc`. |
+| API Gateway | API Gateway berjalan sebagai Deployment dengan dua replika dan diakses melalui ClusterIP Service. Nilai `RAFT_ADDR` dibaca dari ConfigMap. |
+| ConfigMap | Konfigurasi ID node, daftar peer, port, lokasi data, ukuran awal cluster, dan contact node berada di `k8s/base/10-configmap.yaml`. |
+| Penyimpanan persisten | Setiap pod memperoleh satu PVC `ReadWriteOnce` melalui `volumeClaimTemplates`. |
+| Pemulihan setelah crash | Node menyimpan term, vote, log, commit index, membership, dan snapshot di `/data`. |
+| Probe | Endpoint `/ready` baru berhasil setelah node mengetahui leader. Endpoint `/live` memeriksa apakah actor Raft masih merespons. |
+| Scaling bonus | Pod dengan ordinal 3 dan 4 otomatis mengirim `AddNode` ke cluster yang sedang berjalan. |
+| NetworkPolicy bonus | Semua trafik ditolak secara default. Port RPC hanya dapat diakses oleh pod Raft dan API Gateway, sedangkan trafik dari luar cluster hanya masuk melalui port HTTP gateway. |
+| Namespace dan RBAC bonus | Semua resource berada di namespace `hogyoku`. ServiceAccount tidak menerima token maupun izin untuk mengakses Kubernetes API. |
 
-Link:
+## Tautan
 
-- Repository: `https://github.com/bellechillguy/Raft-Hogyoku-in-Kubernetes`
-- Video demo: `https://youtu.be/aY3Tl-msO1A`
+- [Repository](https://github.com/bellechillguy/Raft-Hogyoku-in-Kubernetes)
+- [Video demo](https://youtu.be/aY3Tl-msO1A)
 
-## Kenapa StatefulSet
+## Mengapa memakai StatefulSet
 
-Setiap anggota Raft punya identitas dan disk yang tidak boleh tertukar. `raft-1` harus kembali sebagai node 2 dengan PVC yang sama setelah restart. Deployment tidak memberi pasangan identitas, hostname, dan volume yang stabil seperti itu.
+Setiap node Raft memiliki identitas dan penyimpanan yang tidak boleh tertukar. Sebagai contoh, `raft-1` harus kembali sebagai node 2 dan menggunakan PVC yang sama setelah restart.
 
-StatefulSet ini memakai `podManagementPolicy: Parallel`. Jika pod dibuat berurutan, Kubernetes akan menunggu `raft-0` Ready sebelum membuat `raft-1`. Sementara itu, `raft-0` belum bisa Ready karena cluster 3 node belum punya quorum. Mode paralel memutus kebuntuan tersebut tanpa menghilangkan identitas StatefulSet.
+Deployment tidak memberikan hubungan tetap antara nama pod, hostname, dan volume. StatefulSet menyediakan ketiganya.
 
-Headless Service mengeluarkan record DNS langsung untuk setiap pod. Node tidak perlu menyimpan IP yang mudah berubah:
+StatefulSet menggunakan konfigurasi berikut:
+
+```yaml
+podManagementPolicy: Parallel
+```
+
+Tanpa mode paralel, Kubernetes membuat pod secara berurutan. Kubernetes akan menunggu `raft-0` berstatus Ready sebelum membuat `raft-1`.
+
+Masalahnya, `raft-0` belum dapat menjadi Ready karena cluster tiga node belum memiliki quorum. `podManagementPolicy: Parallel` membuat ketiga pod secara bersamaan sehingga proses election dapat dimulai tanpa menghilangkan identitas tetap milik StatefulSet.
+
+Headless Service memberikan record DNS langsung kepada setiap pod. Node Raft tidak perlu menyimpan alamat IP yang dapat berubah setelah restart.
 
 ```text
 raft-0.raft-svc.hogyoku.svc.cluster.local:8000
@@ -35,7 +47,7 @@ raft-1.raft-svc.hogyoku.svc.cluster.local:8000
 raft-2.raft-svc.hogyoku.svc.cluster.local:8000
 ```
 
-## Struktur Directory
+## Struktur direktori
 
 ```text
 .
@@ -50,23 +62,29 @@ raft-2.raft-svc.hogyoku.svc.cluster.local:8000
 │   │   ├── 40-api-gateway.yaml
 │   │   └── 50-network-policy.yaml
 ├── scripts/
-│   │   ├── cluster-status.sh
-│   │   └── measure-leader-failover.sh
+│   ├── cluster-status.sh
+│   └── measure-leader-failover.sh
 ├── src/
 └── tests/
 ```
 
-## Build dan deploy lokal
+## Build dan deployment lokal
 
-Butuh Docker, `kubectl`, dan cluster Kubernetes aktif. NetworkPolicy hanya benar-benar bisa didemokan jika CNI cluster menegakkannya.
+Siapkan Docker, `kubectl`, dan cluster Kubernetes yang aktif.
 
-Build image dari folder ini:
+NetworkPolicy hanya dapat diuji jika CNI pada cluster mendukung dan menerapkan NetworkPolicy.
+
+### Build image
+
+Jalankan perintah berikut dari root repositori:
 
 ```bash
 docker build -t hogyoku:local .
 ```
 
-Docker Desktop Kubernetes dapat memakai image lokal tersebut. Untuk kind atau minikube, muat image ke cluster lebih dulu:
+Docker Desktop Kubernetes dapat langsung memakai image lokal tersebut.
+
+Untuk kind atau minikube, muat image ke dalam cluster terlebih dahulu:
 
 ```bash
 kind load docker-image hogyoku:local
@@ -74,7 +92,7 @@ kind load docker-image hogyoku:local
 minikube image load hogyoku:local
 ```
 
-Deploy dari nol:
+### Deploy dari awal
 
 ```bash
 kubectl delete namespace hogyoku --ignore-not-found
@@ -82,20 +100,27 @@ kubectl apply -k k8s
 kubectl -n hogyoku get pods -w
 ```
 
-Pada awal boot, kolom `READY` akan tetap `0/1`. Setelah election selesai, tiga pod Raft berubah menjadi `1/1`. Cek resource dan PVC:
+Saat cluster baru menyala, kolom `READY` akan tetap menunjukkan `0/1` selama proses election berlangsung. Setelah salah satu node terpilih sebagai leader, ketiga pod Raft akan berubah menjadi `1/1`.
+
+Periksa resource dan PVC dengan perintah berikut:
 
 ```bash
 kubectl -n hogyoku get statefulset,deployment,service,pod,pvc
-kubectl -n hogyoku get endpointslice -l kubernetes.io/service-name=raft-svc
+kubectl -n hogyoku get endpointslice \
+  -l kubernetes.io/service-name=raft-svc
 ```
 
-Lihat status tiap node:
+Untuk melihat status setiap node, jalankan:
 
 ```bash
 ./scripts/cluster-status.sh
 ```
 
-Output `/status` berisi role, term, leader ID, commit index, dan jumlah peer. Tepat satu node semestinya memiliki `"role":"leader"`.
+Endpoint `/status` menampilkan role, term, leader ID, commit index, dan jumlah peer. Dalam kondisi normal, hanya satu node yang memiliki nilai berikut:
+
+```json
+"role": "leader"
+```
 
 ## Membuka UI dan menguji data
 
@@ -105,7 +130,15 @@ Jalankan port-forward di terminal terpisah:
 kubectl -n hogyoku port-forward service/api-gateway 8080:8080
 ```
 
-Buka `http://127.0.0.1:8080`, lalu lakukan Set dan Get dari UI. Tes yang sama bisa dijalankan lewat HTTP:
+Buka alamat berikut melalui browser:
+
+```text
+http://127.0.0.1:8080
+```
+
+Gunakan tombol **Set** dan **Get** pada UI untuk menyimpan dan membaca data.
+
+Operasi yang sama dapat diuji langsung melalui HTTP:
 
 ```bash
 curl -sS -X POST http://127.0.0.1:8080/api/set \
@@ -115,9 +148,15 @@ curl -sS -X POST http://127.0.0.1:8080/api/set \
 curl -sS http://127.0.0.1:8080/api/get/fragment
 ```
 
-## Demo crash recovery
+## Demo pemulihan setelah crash
 
-Simpan data dari UI, lalu cari leader dengan `./scripts/cluster-status.sh`. Hapus pod leader saja, bukan PVC:
+Simpan data melalui UI, lalu cari node leader:
+
+```bash
+./scripts/cluster-status.sh
+```
+
+Hapus pod leader tanpa menghapus PVC:
 
 ```bash
 kubectl -n hogyoku delete pod raft-LEADER_ORDINAL
@@ -125,23 +164,33 @@ kubectl -n hogyoku get pods -w
 ./scripts/cluster-status.sh
 ```
 
-StatefulSet membuat pod pengganti dengan nama yang sama dan memasangkan PVC lamanya. Leader baru dipilih oleh dua node yang masih hidup. Setelah pod pengganti Ready, Get nilai `fragment` lagi dari UI.
+StatefulSet akan membuat pod pengganti dengan nama yang sama dan memasangkan kembali PVC miliknya. Dua node yang masih aktif akan memilih leader baru.
 
-Untuk waktu recovery, ambil waktu sebelum delete dan berhenti saat status kembali menunjukkan satu leader:
+Setelah pod pengganti kembali Ready, baca lagi nilai `fragment` melalui UI. Nilai tersebut seharusnya masih tersedia.
+
+### Mengukur waktu pergantian leader
+
+Catat waktu sebelum pod dihapus. Hentikan pengukuran setelah status cluster kembali menunjukkan satu leader.
 
 ```bash
 python3 -c 'import time; print(int(time.time() * 1000))'
+
 kubectl -n hogyoku delete pod raft-LEADER_ORDINAL
-while ! ./scripts/cluster-status.sh | grep -q '"role":"leader"'; do sleep 1; done
+
+while ! ./scripts/cluster-status.sh | grep -q '"role":"leader"'; do
+  sleep 1
+done
+
 python3 -c 'import time; print(int(time.time() * 1000))'
 ```
 
-Selisih kedua angka adalah waktu recovery dalam milidetik. Target tugas untuk pergantian leader adalah kurang dari 10 detik. 
+Kurangi waktu akhir dengan waktu awal untuk memperoleh durasi recovery dalam milidetik.
 
+Target pergantian leader pada tugas ini adalah kurang dari 10 detik.
 
-## Scale dari 3 ke 5 node
+## Scale dari tiga menjadi lima node
 
-Tidak perlu mengubah image atau me-restart tiga node lama:
+Jumlah replika dapat ditambah tanpa mengganti image atau me-restart tiga node lama.
 
 ```bash
 kubectl -n hogyoku scale statefulset raft --replicas=5
@@ -150,13 +199,19 @@ kubectl -n hogyoku get pods
 ./scripts/cluster-status.sh
 ```
 
-`raft-3` mengambil ID 4 dan `raft-4` mengambil ID 5 dari ConfigMap. Entrypoint melihat ordinal keduanya berada di luar cluster awal, lalu menghubungi `raft-0`. Jika `raft-0` bukan leader, RPC mengembalikan alamat leader dan proses join mengikuti redirect. Leader menulis `AddNode` ke log dan mengirim log atau snapshot kepada node baru.
+`raft-3` menggunakan ID 4, sedangkan `raft-4` menggunakan ID 5. Kedua ID tersebut dibaca dari ConfigMap.
 
-Ulangi Get untuk data yang dibuat sebelum scaling. Nilainya harus tetap ada.
+Entrypoint mendeteksi bahwa ordinal 3 dan 4 berada di luar ukuran awal cluster. Pod baru kemudian menghubungi `raft-0` untuk bergabung.
+
+Jika `raft-0` bukan leader, RPC mengembalikan alamat leader. Proses join melanjutkan permintaan ke alamat tersebut. Leader lalu menulis perintah `AddNode` ke log dan mengirim log atau snapshot yang dibutuhkan node baru.
+
+Setelah scaling selesai, ulangi operasi Get terhadap data yang dibuat sebelumnya. Nilainya harus tetap tersedia.
 
 ## Demo NetworkPolicy
 
-Pastikan CNI cluster mendukung NetworkPolicy. Port gateway boleh diakses, sedangkan RPC Raft dari namespace lain harus gagal:
+Pastikan CNI cluster menerapkan NetworkPolicy.
+
+Port HTTP API Gateway tetap dapat diakses, sedangkan port RPC Raft dari namespace lain harus ditolak.
 
 ```bash
 kubectl run outside-check \
@@ -166,7 +221,11 @@ kubectl run outside-check \
   -- nc -zvw3 raft-0.raft-svc.hogyoku.svc.cluster.local 8000
 ```
 
-Perintah tersebut semestinya timeout. UI tetap berfungsi karena pod gateway diberi akses khusus ke port 8000. Tampilkan policy saat menjelaskan hasilnya:
+Perintah tersebut seharusnya berakhir dengan timeout.
+
+UI tetap dapat digunakan karena pod API Gateway mendapat izin khusus untuk mengakses port `8000` milik node Raft.
+
+Periksa policy yang aktif dengan perintah berikut:
 
 ```bash
 kubectl -n hogyoku get networkpolicy
@@ -175,7 +234,15 @@ kubectl -n hogyoku describe networkpolicy raft-internal
 
 ## Demo RBAC
 
-Workload ini tidak perlu membaca Pod, Secret, atau resource Kubernetes lain. Karena itu Role sengaja memiliki `rules: []`, token ServiceAccount tidak di-mount, dan kedua ServiceAccount diikat ke Role kosong tersebut.
+Workload tidak perlu membaca Pod, Secret, atau resource Kubernetes lainnya. Karena itu, Role menggunakan konfigurasi berikut:
+
+```yaml
+rules: []
+```
+
+Token ServiceAccount juga tidak di-mount ke dalam pod. ServiceAccount milik Raft dan API Gateway hanya diikat ke Role kosong tersebut.
+
+Uji hak akses keduanya:
 
 ```bash
 kubectl auth can-i \
@@ -187,16 +254,39 @@ kubectl auth can-i \
   get secrets -n hogyoku
 ```
 
-Keduanya harus menjawab `no`. Ini lebih kecil izinnya daripada memberi akses yang tidak digunakan.
+Kedua perintah harus menghasilkan:
 
-
-## Verifikasi source
-
-```bash
-rustfmt --edition 2021 --check src/raft/state.rs src/raft/actor.rs src/bin/server.rs src/utils/client.rs tests/persistent_recovery.rs
-cargo test --locked --all-targets
-kubectl kustomize k8s >/tmp/hogyoku-rendered.yaml
-kubectl kustomize k8s/overlays/https >/tmp/hogyoku-https-rendered.yaml
+```text
+no
 ```
 
-Test mencakup operasi KV, log conflict, snapshot, membership command, dan recovery data committed sebelum snapshot dibuat.
+Konfigurasi ini mengikuti prinsip least privilege karena workload tidak menerima izin yang tidak dipakai.
+
+## Verifikasi source code
+
+Jalankan pemeriksaan format, pengujian Rust, dan validasi manifest Kubernetes:
+
+```bash
+rustfmt --edition 2021 --check \
+  src/raft/state.rs \
+  src/raft/actor.rs \
+  src/bin/server.rs \
+  src/utils/client.rs \
+  tests/persistent_recovery.rs
+
+cargo test --locked --all-targets
+
+kubectl kustomize k8s \
+  >/tmp/hogyoku-rendered.yaml
+
+kubectl kustomize k8s/overlays/https \
+  >/tmp/hogyoku-https-rendered.yaml
+```
+
+Pengujian mencakup:
+
+- operasi key-value;
+- konflik log;
+- snapshot;
+- perintah perubahan membership; dan
+- pemulihan data committed sebelum snapshot dibuat.
